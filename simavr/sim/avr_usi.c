@@ -307,11 +307,37 @@ static void avr_usi_write_usidr(struct avr_t * avr, avr_io_addr_t addr, uint8_t 
 static void _avr_usi_di_changed(struct avr_irq_t * irq, uint32_t value, void * param)
 {
 	avr_usi_t * p = (avr_usi_t *)param;
+	avr_t     * avr = p->io.avr;
+    int         up, down;
 
 	DBG(printf("USI ------------------- DI changed to %d at cycle %llu\n",
 		value,
-		p->io.avr->cycle));
+		avr->cycle));
 	p->in_bit0 = value;
+
+	if (avr_regbit_get(avr, p->usiwm) >= USI_WM_TWOWIRE) {
+		//Start & Stop detection for two wire mode
+
+		if (!p->io.irq[USI_IRQ_USCK].value)
+			return; // SCL must be high at SDA change
+		avr_ioport_state_t iostate;
+		uint8_t port = p->port_ioctl & 0xFF;
+		if (avr_ioctl(avr, AVR_IOCTL_IOPORT_GETSTATE(port), &iostate) < 0)
+			return;
+		if (iostate.ddr & (1 << p->pin_di.bit))
+		 	return; // SDA must be in input mode
+
+		up = !irq->value && value;
+		down = irq->value && !value;
+
+		DBG(printf("USI ------------------- DI %s condition detected\n",
+			down ? "start" : up ? "stop" : "?"));
+		
+		if (down)
+			avr_raise_interrupt(avr, &p->usi_start);
+		else if (up)
+			avr_core_watch_write(avr, p->r_usisr, avr->data[p->r_usisr] | (1 << p->usipf.bit));
+	}
 }
 
 static void _avr_usi_usck_changed(struct avr_irq_t * irq, uint32_t value, void * param)
